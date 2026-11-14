@@ -7,6 +7,7 @@ final class DockPinner {
     private static let defaults = UserDefaults.standard
     private static let kEnabled = "active"
     private static let kLockedUUID = "lockedDisplayUUID"
+    private static let kFollowMain = "followMainDisplay"
 
     static var isEnabled: Bool {
         get { defaults.object(forKey: kEnabled) as? Bool ?? true }
@@ -16,6 +17,11 @@ final class DockPinner {
     static var lockedDisplayUUID: String {
         get { defaults.string(forKey: kLockedUUID) ?? "" }
         set { defaults.set(newValue, forKey: kLockedUUID) }
+    }
+
+    static var followsMainDisplay: Bool {
+        get { defaults.bool(forKey: kFollowMain) }
+        set { defaults.set(newValue, forKey: kFollowMain) }
     }
 
     // MARK: - Tunables
@@ -51,11 +57,18 @@ final class DockPinner {
     deinit { teardownTap() }
 
     func refresh() {
-        teardownTap()
         status = computeStatus()
-        guard case .active = status else { return }
+        guard case .active = status else {
+            teardownTap()
+            return
+        }
         zones = computeZones()
-        installTap()
+        // The tap only reads `zones`, so a working one survives target and display changes.
+        let tapIsLive = tap.map { CFMachPortIsValid($0) && CGEvent.tapIsEnabled(tap: $0) } ?? false
+        if !tapIsLive {
+            teardownTap()
+            installTap()
+        }
         if tap == nil { status = .noPermission }
     }
 
@@ -63,12 +76,17 @@ final class DockPinner {
         guard Self.isEnabled else { return .disabled }
         let screens = NSScreen.screens
         guard screens.count > 1 else { return .singleDisplay }
-        let uuid = Self.lockedDisplayUUID
-        guard let locked = screens.first(where: { DisplayUtils.uuid(for: $0) == uuid }) else {
-            return .unknownDisplay
-        }
+        guard let target = targetIndex(in: screens) else { return .unknownDisplay }
         guard AXIsProcessTrusted() else { return .noPermission }
-        return .active(displayName: locked.localizedName)
+        return .active(displayName: screens[target].localizedName)
+    }
+
+    private func targetIndex(in screens: [NSScreen]) -> Int? {
+        DisplayUtils.targetIndex(
+            followMain: Self.followsMainDisplay,
+            mainID: CGMainDisplayID(),
+            lockedUUID: Self.lockedDisplayUUID,
+            displays: screens.map { (DisplayUtils.displayID(for: $0), DisplayUtils.uuid(for: $0)) })
     }
 
     // MARK: - Geometry
@@ -92,9 +110,7 @@ final class DockPinner {
     private func computeZones() -> [Zone] {
         let screens = NSScreen.screens
         guard screens.count > 1 else { return [] }
-        let lockedUUID = Self.lockedDisplayUUID
-        guard let lockedIdx = screens.firstIndex(where: { DisplayUtils.uuid(for: $0) == lockedUUID })
-        else { return [] }
+        guard let lockedIdx = targetIndex(in: screens) else { return [] }
 
         let frames = screens.map(cgFrame)
         let pos = dockPosition()
