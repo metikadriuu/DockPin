@@ -18,6 +18,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.pinner.refresh()
             self?.rebuildMenu()
         }
+
+        for name in [NSWorkspace.didWakeNotification, NSWorkspace.screensDidWakeNotification] {
+            NSWorkspace.shared.notificationCenter.addObserver(
+                forName: name,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.pinner.refresh()
+                self?.rebuildMenu()
+            }
+        }
     }
 
     private func promptAccessibilityIfNeeded() {
@@ -43,7 +54,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func statusText() -> String {
         switch pinner.status {
-        case .active(let name):  return "Pinning Dock to \(name)"
+        case .active(let name):
+            return DockPinner.followsMainDisplay
+                ? "Pinning Dock to \(name) (automatic)"
+                : "Pinning Dock to \(name)"
         case .disabled:          return "Disabled"
         case .noPermission:      return "⚠ Accessibility permission required"
         case .singleDisplay:     return "Only one display connected"
@@ -80,7 +94,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let lockHeader = NSMenuItem(title: "Lock Dock to", action: nil, keyEquivalent: "")
         let lockSubmenu = NSMenu()
-        let currentUUID = DockPinner.lockedDisplayUUID
+        let followMain = NSMenuItem(title: "Automatically Follow Main Display",
+                                    action: #selector(followMainDisplay),
+                                    keyEquivalent: "")
+        followMain.state = DockPinner.followsMainDisplay ? .on : .off
+        followMain.target = self
+        lockSubmenu.addItem(followMain)
+        lockSubmenu.addItem(.separator())
+        let currentUUID = DockPinner.followsMainDisplay ? nil : DockPinner.lockedDisplayUUID
         for screen in NSScreen.screens {
             guard let uuid = DisplayUtils.uuid(for: screen) else { continue }
             let item = NSMenuItem(title: DisplayUtils.label(for: screen),
@@ -137,9 +158,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         rebuildMenu()
     }
 
+    @objc private func followMainDisplay() {
+        DockPinner.followsMainDisplay = true
+        pinner.refresh()
+        rebuildMenu()
+    }
+
     @objc private func selectDisplay(_ sender: NSMenuItem) {
         guard let uuid = sender.representedObject as? String else { return }
         DockPinner.lockedDisplayUUID = uuid
+        DockPinner.followsMainDisplay = false
         pinner.refresh()
         rebuildMenu()
     }
